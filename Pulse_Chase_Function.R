@@ -4,6 +4,7 @@
 # Load dependencies ------------------------------------------------------------
 library(dplyr)
 library(bakR)
+library(purrr)
 
 
 # Helper functions that I will use on multiple occasions
@@ -12,6 +13,72 @@ inv_logit <- function(x) exp(x)/(1+exp(x))
 
 
 # Function to analyze data -----------------------------------------------------
+
+#' Helper function for Monte Carlo analysis strategy
+MC_samples <- function(pulse_mean = 0, pulse_sd = 0.2,
+                   chase_mean = -1, chase_sd = 0.2,
+                   tchase = 2, samps = 1000,
+                   XF, Exp_ID){
+
+  # Draw from logit(fs4U) distributions
+  MC_lfn_pulse <- rnorm(samps, mean = pulse_mean,
+                        sd = pulse_sd)
+
+  MC_lfn_chase <- pmin(rnorm(samps, mean = chase_mean,
+                             sd = chase_sd),
+                       MC_lfn_pulse)
+
+  # Make sure lfn_pulse > lfn_chase
+  keeps <- which(MC_lfn_chase < MC_lfn_pulse)
+
+  final_MC_lfn_pulse <- MC_lfn_pulse[keeps]
+  final_MC_lfn_chase <- MC_lfn_chase[keeps]
+
+
+  # Make sure there are enough valid samples
+  redos <- 0
+
+  while(length(keeps) < samps & redos < 10){
+
+    MC_lfn_pulse <- rnorm(samps, mean = pulse_mean,
+                          sd = pulse_sd)
+
+    MC_lfn_chase <- pmin(rnorm(samps, mean = chase_mean,
+                               sd = chase_sd),
+                         MC_lfn_pulse)
+
+    new_keeps <- which(MC_lfn_chase < MC_lfn_pulse)
+    final_MC_lfn_pulse <- c(final_MC_lfn_pulse, MC_lfn_pulse[new_keeps])
+    final_MC_lfn_chase <- c(final_MC_lfn_chase, MC_lfn_chase[new_keeps])
+
+    keeps <- c(keeps, new_keeps)
+
+    redos <- redos + 1
+
+  }
+
+
+  MC_kdeg <- -((log(inv_logit(final_MC_lfn_chase)) - log(inv_logit(final_MC_lfn_pulse)))/tchase)
+  MC_log_kdeg <- log(MC_kdeg)
+
+  kdeg <- mean(MC_kdeg)
+  log_kdeg <- mean(MC_log_kdeg)
+
+  kdeg_sd <- sd(MC_kdeg)
+  log_kdeg_sd <- sd(MC_log_kdeg)
+
+
+  out_df <- data.frame(Exp_ID = Exp_ID,
+             XF = XF,
+             kdeg = kdeg,
+             log_kdeg = log_kdeg,
+             kdeg_sd = kdeg_sd,
+             log_kdeg_sd = log_kdeg_sd)
+
+
+  return(out_df)
+
+}
 
 #' Documentation for function:
 #'
@@ -38,9 +105,7 @@ inv_logit <- function(x) exp(x)/(1+exp(x))
 #' should be used for analysis. Default it to use Fast_Fit.
 #'
 #' ztest: Boolean indicating whether a z-test or moderated t-test will be used
-#' for assessing differences in kdeg. z-test is default and a bit less conservative.
-#' It is made default because other aspects of analysis are fairly conservative,
-#' so it balances out.
+#' for assessing differences in kdeg. z-test will be less conservative.
 #'
 #' conservative: Boolean indicating whether to reduce the standard deviation of
 #' the L2FC(kdeg) standard errors. Setting this to FALSE can cause some very small
@@ -52,6 +117,13 @@ inv_logit <- function(x) exp(x)/(1+exp(x))
 #' null_cutoff: |L2FC(kdeg)| cutoff for null hypothesis testing. The null hypothesis
 #' tested will be |L2FC(kdeg)| < |null_cutoff|. Setting null_cutoff to 0 is the standard
 #' t/z-test.
+#'
+#' Debug: Boolean that if TRUE will launch the environment browswer for debugging purposes
+#'
+#' MC: Boolean that if TRUE will use Monte Carlo to quantify uncertainty rather
+#' than the less accurate delta approximation.
+#'
+#' samps: number of Monte Carlo samples to use
 #'
 #' OUTPUT:
 #' A list with 4 objects in it:
@@ -70,9 +142,14 @@ inv_logit <- function(x) exp(x)/(1+exp(x))
 analyze_pulse_chase <- function(fit_pulse, fit_chase_1, fit_chase_2,
                                 chase_dict = tibble(Exp_ID = 1:4,
                                                     tchase = c(1, 2, 4, 8)),
-                                Hybrid = FALSE, ztest = FALSE, conservative = TRUE,
-                                reg_factor = 2, null_cutoff = 0){
+                                Hybrid = FALSE, ztest = FALSE, conservative = FALSE,
+                                reg_factor = 2, null_cutoff = 0, Debug = FALSE,
+                                MC = TRUE, samps = 1000){
 
+
+  if(Debug){
+    browser()
+  }
 
   nreps <- max(fit_pulse$Fast_Fit$Fn_Estimates$Replicate)
 
@@ -162,20 +239,57 @@ analyze_pulse_chase <- function(fit_pulse, fit_chase_1, fit_chase_2,
     merged_fits <- inner_join(essential_chase, essential_pulse, by = c("XF"))
 
     # Estimate log(fn) for pulse and chase using delta approximation
-    merged_fits <- merged_fits %>%
-      dplyr::mutate(log_fn_chase = log(inv_logit(lfn_chase)),
-             log_fn_chase_sd = ((1 - inv_logit(lfn_chase))^2)*(lfn_sd_chase^2),
-             log_fn_pulse = log(inv_logit(lfn_pulse)),
-             log_fn_pulse_sd = ((1 - inv_logit(lfn_pulse))^2)*(lfn_sd_pulse^2))
 
-    # Add chase time information
-    merged_fits <- dplyr::inner_join(merged_fits, chase_dict, by = "Exp_ID")
+    if(MC){
+
+      ## initialize data.frame to add to merged_fits
+      nr <- nrow(merged_fits)
+      temp_data <- rep(0, times = nr)
+      MC_df <- tibble(Exp_ID = temp_data,
+                      XF = temp_data,
+                      kdeg = temp_data,
+                      log_kdeg = temp_data,
+                      kdeg_sd = temp_data,
+                      log_kdeg_sd = temp_data)
+
+      # Add chase time information
+      merged_fits <- dplyr::inner_join(merged_fits, chase_dict, by = "Exp_ID")
+
+      # More efficient: pmap
+      MC_list <- pmap(list(Exp_ID = merged_fits$Exp_ID,
+                           XF = merged_fits$XF,
+                           pulse_mean = merged_fits$lfn_pulse,
+                           chase_mean = merged_fits$lfn_chase,
+                           pulse_sd = merged_fits$lfn_sd_pulse,
+                           chase_sd = merged_fits$lfn_sd_chase,
+                           tchase = merged_fits$tchase,
+                           samps = samps), MC_samples)
 
 
-    # Estimate kdeg and kdeg sd
-    merged_fits <- merged_fits %>%
-      dplyr::mutate(kdeg = (log_fn_pulse - log_fn_chase)/tchase,
-             kdeg_sd = sqrt( (log_fn_chase_sd)^2 + (log_fn_pulse_sd)^2 )/tchase)
+      MC_df <- bind_rows(MC_list)
+
+
+      merged_fits <- inner_join(merged_fits, MC_df, by = c("Exp_ID", "XF"))
+
+    }else{
+      merged_fits <- merged_fits %>%
+        dplyr::mutate(log_fn_chase = log(inv_logit(lfn_chase)),
+                      log_fn_chase_sd = ((1 - inv_logit(lfn_chase))^2)*(lfn_sd_chase^2),
+                      log_fn_pulse = log(inv_logit(lfn_pulse)),
+                      log_fn_pulse_sd = ((1 - inv_logit(lfn_pulse))^2)*(lfn_sd_pulse^2))
+
+      # Add chase time information
+      merged_fits <- dplyr::inner_join(merged_fits, chase_dict, by = "Exp_ID")
+
+
+      # Estimate kdeg and kdeg sd
+      merged_fits <- merged_fits %>%
+        dplyr::mutate(kdeg = (log_fn_pulse - log_fn_chase)/tchase,
+                      kdeg_sd = sqrt( (log_fn_chase_sd)^2 + (log_fn_pulse_sd)^2 )/tchase)
+
+    }
+
+
 
     # Filter out negative kdeg estimates (from when chase fn > pulse fn due to random variance)
     merged_fits <- merged_fits[merged_fits$kdeg > 0,]
@@ -252,13 +366,21 @@ analyze_pulse_chase <- function(fit_pulse, fit_chase_1, fit_chase_2,
 }
 
 
+
+
+################################################################################
+######################### START OF TESTING #####################################
+################################################################################
+
+
+
 # Try out function on simulated data -------------------------------------------
 
 ####### SIMULATNG PULSE-CHASE DATA (not something bakR can do by itself) #######
 
 # "pulse" (condition 2 much larger fraction news than condition 1)
 sim_pulse <- Simulate_bakRData(500, nreps = 2,
-                               eff_mean = 1, eff_sd = 0.25,
+                               eff_mean = 0, eff_sd = 1,
                                num_kd_DE = c(0, 500))
 
 fit_pulse <- bakRFit(sim_pulse$bakRData, NSS = TRUE)
@@ -353,72 +475,511 @@ fit_chase_2 <- list(Fast_Fit = list(Regularized_ests = regest_chase))
 
 
 # Run analysis
-results <- analyze_pulse_chase(fit_pulse = fit_pulse,
+results_MC <- analyze_pulse_chase(fit_pulse = fit_pulse,
                                fit_chase_1 = fit_chase_1,
                                fit_chase_2 = fit_chase_2,
                                ztest = FALSE,
-                               conservative = TRUE)
+                               conservative = FALSE,
+                               MC = TRUE,
+                               Debug = FALSE)
+
+results <- analyze_pulse_chase(fit_pulse = fit_pulse,
+                                  fit_chase_1 = fit_chase_1,
+                                  fit_chase_2 = fit_chase_2,
+                                  ztest = FALSE,
+                                  conservative = TRUE,
+                                  MC = FALSE)
+
+
+
+# Are standard errors correlated between the two analysis strategies?
+plot(results$Effects_df$se, results_MC$Effects_df$se)
+abline(0,1)
+
+plot(results$Effects_df$se[results$Effects_df$Exp_ID == 1], results_MC$Effects_df$se[results_MC$Effects_df$Exp_ID == 1])
+abline(0,1)
+
+plot(results$Effects_df$se[results$Effects_df$Exp_ID == 2], results_MC$Effects_df$se[results_MC$Effects_df$Exp_ID == 2])
+abline(0,1)
+
+plot(results$Effects_df$se[results$Effects_df$Exp_ID == 3], results_MC$Effects_df$se[results_MC$Effects_df$Exp_ID == 3])
+abline(0,1)
+
+plot(results$Effects_df$se[results$Effects_df$Exp_ID == 4], results_MC$Effects_df$se[results_MC$Effects_df$Exp_ID == 4])
+abline(0,1)
 
 
 # Make volcano plot
-plotVolcano(results$Fit$Fast_Fit, Exps = 2)
-
-
-# Run Hybrid analysis
-results <- analyze_pulse_chase(fit_pulse = fit_pulse,
-                               fit_chase_1 = fit_chase_1,
-                               fit_chase_2 = fit_chase_2,
-                               Hybrid = TRUE)
-
-
-# Make Hybrid volcano plot
 plotVolcano(results$Fit$Fast_Fit)
+plotVolcano(results_MC$Fit$Fast_Fit)
 
 
 
-### Simulate independent data to make sure it works on actual bakRFits
-sim_pulse <- Simulate_bakRData(500, nreps = 2,
-                               num_kd_DE = c(0, 0),
-                               fn_mean = 1, fn_sd = 0.05)
+### I want to make a volcano plot colored by reference kdeg.
 
-sim_chase_1 <- Simulate_bakRData(500, nreps = 2,
-                               num_kd_DE = c(0, 500),
-                               eff_mean = -0.75,
-                               eff_sd = 0.05,
-                               fn_mean = 0, fn_sd = 0.05)
+Volcano_MC <- results_MC$Effects_df
 
-sim_chase_2 <- Simulate_bakRData(500, nreps = 2,
-                                 num_kd_DE = c(0, 500),
-                                 eff_mean = -0.75,
-                                 eff_sd = 0.05,
-                                 fn_mean = 0, fn_sd = 0.05)
+pulse_reg <- fit_pulse$Fast_Fit$Regularized_ests
+
+pulse_ests <- pulse_reg %>%
+  group_by(XF) %>%
+  summarise(reads = mean(nreads),
+            lfn_se = mean(sd_post),
+            lfn = mean(log_kdeg_post))
 
 
-fit_pulse <- bakRFit(sim_pulse$bakRData, NSS = TRUE)
-fit_chase_1 <- bakRFit(sim_chase_1$bakRData, NSS = TRUE)
-fit_chase_2 <- bakRFit(sim_chase_2$bakRData, NSS = TRUE)
+Volcano_MC <- inner_join(Volcano_MC, pulse_ests, by = "XF")
 
 
-# analyze
-results <- analyze_pulse_chase(fit_pulse = fit_pulse,
-                               fit_chase_1 = fit_chase_1,
-                               fit_chase_2 = fit_chase_2,
-                               chase_dict = data.frame(Exp_ID = 1:2, tchase = c(2, 4)),
-                               ztest = TRUE)
+ggplot(Volcano_MC[order(-Volcano_MC$lfn),], aes(x = L2FC_kdeg, y = -log10(pval), color = lfn)) +
+  geom_point() +
+  scale_color_viridis_b() +
+  xlab("L2FC(kdeg)") +
+  ylab("-log10(p-value")
 
-plotVolcano(results$Fit$Fast_Fit)
 
-### Hybrid
 
-# Get sampling warnings usually because data is weird, but that's to be expected.
-fit_pulse <- bakRFit(fit_pulse, HybridFit = TRUE, NSS = TRUE)
-fit_chase_1 <- bakRFit(fit_chase_1, HybridFit = TRUE, NSS = TRUE)
-fit_chase_2 <- bakRFit(fit_chase_2, HybridFit = TRUE, NSS = TRUE)
 
-# analyze
-results <- analyze_pulse_chase(fit_pulse = fit_pulse,
-                               fit_chase_1 = fit_chase_1,
-                               fit_chase_2 = fit_chase_2,
-                               chase_dict = data.frame(Exp_ID = 1:2, tchase = c(2, 4)),
-                               Hybrid = TRUE)
+### Check that kdeg estimates agree
+plot(results$Chase_kdegs_E1$log_kdeg, results_MC$Chase_kdegs_E1$log_kdeg)
+abline(0,1)
 
+plot(results$Chase_kdegs_E1$log_kdeg_sd, results_MC$Chase_kdegs_E1$log_kdeg_sd)
+abline(0,1)
+
+# How well does pulse estimate uncertainty correlate with L2FC(kdeg) uncertainty
+pulse_reg <- fit_pulse$Fast_Fit$Regularized_ests
+
+pulse_ests <- pulse_reg %>%
+  group_by(XF) %>%
+  summarise(reads = mean(nreads),
+            lfn_se = mean(sd_post))
+
+### Assess if correlation of uncertainty with read coverage is maintained
+
+E1_pulse_ests <- pulse_reg[pulse_reg$Exp_ID == 1,] %>%
+  dplyr::select(nreads, sd_post, XF)
+
+E1_MC_ests <- results_MC$Chase_kdegs_E1
+E1_MC_ests <- inner_join(E1_MC_ests, E1_pulse_ests, by = "XF")
+E1_chase_ests <- results$Chase_kdegs_E1
+E1_chase_ests <- inner_join(E1_chase_ests, E1_pulse_ests, by = "XF")
+
+
+plot(log10(E1_chase_ests$nreads), E1_chase_ests$log_kdeg_sd,
+     ylim = c(0, 0.5))
+plot(log10(E1_MC_ests$nreads), E1_MC_ests$log_kdeg_sd)
+
+plot(log10(E1_MC_ests$sd_post), E1_MC_ests$log_kdeg_sd)
+plot(log10(E1_MC_ests$sd_post), E1_chase_ests$log_kdeg_sd,
+     ylim = c(0, 0.5))
+
+
+# Prep for MA plot
+plot(log10(pulse_ests$reads), pulse_ests$lfn_se)
+
+
+Effects_MC <- results_MC$Effects_df
+Effects <- results$Effects_df
+
+Effects_MC <- inner_join(Effects_MC, pulse_ests, by = "XF")
+Effects <- inner_join(Effects, pulse_ests, by = "XF")
+
+plot(Effects_MC$lfn_se, Effects_MC$se)
+plot(Effects$lfn_se, Effects$se, ylim = c(0, 0.5))
+
+# Make MA plot
+Effects_MC <- Effects_MC %>%
+  mutate(sig = as.factor(ifelse(pval < 0.01, ifelse(effect < 0, "Stabilized", "Destabilized"), "Not Sig.")))
+
+Effects <- Effects %>%
+  mutate(sig = as.factor(ifelse(pval < 0.01, ifelse(effect < 0, "Stabilized", "Destabilized"), "Not Sig.")))
+
+
+library(ggplot2)
+
+ggplot(Effects_MC, aes(x = log10(reads), y = L2FC_kdeg, color = sig)) +
+  geom_point() +
+  xlab("log10(reads)") +
+  ylab("L2FC(kdeg)") +
+  scale_color_manual(values = c("orange", "darkgray"))
+
+ggplot(Effects, aes(x = log10(reads), y = L2FC_kdeg, color = sig)) +
+  geom_point() +
+  xlab("log10(reads)") +
+  ylab("L2FC(kdeg)") +
+  scale_color_manual(values = c("orange", "darkgray", "blue"))
+
+
+
+##### TEST OUT MC STRATEGY -----------------------------------------------------
+
+MC_sim <- function(pulse_mean = 0, pulse_sd = 0.2,
+                   chase_mean = -1, chase_sd = 0.2,
+                   tchase = 2, samps = 1000){
+
+  MC_lfn_pulse <- rnorm(samps, mean = pulse_mean,
+                        sd = pulse_sd)
+
+  MC_lfn_chase <- pmin(rnorm(samps, mean = chase_mean,
+                             sd = chase_sd),
+                       MC_lfn_pulse)
+
+  # Make sure lfn_pulse > lfn_chase
+  keeps <- which(MC_lfn_chase < MC_lfn_pulse)
+
+  final_MC_lfn_pulse <- MC_lfn_pulse[keeps]
+  final_MC_lfn_chase <- MC_lfn_chase[keeps]
+
+
+  # Make sure there are enough valid samples
+  redos <- 0
+
+  while(length(keeps) < 1000 & redos < 10){
+
+    MC_lfn_pulse <- rnorm(samps, mean = pulse_mean,
+                          sd = pulse_sd)
+
+    MC_lfn_chase <- pmin(rnorm(samps, mean = chase_mean,
+                               sd = chase_sd),
+                         MC_lfn_pulse)
+
+    new_keeps <- which(MC_lfn_chase < MC_lfn_pulse)
+    final_MC_lfn_pulse <- c(final_MC_lfn_pulse, MC_lfn_pulse[new_keeps])
+    final_MC_lfn_chase <- c(final_MC_lfn_chase, MC_lfn_chase[new_keeps])
+
+    keeps <- c(keeps, new_keeps)
+
+    redos <- redos + 1
+
+  }
+
+
+
+
+
+
+  MC_kdeg <- -((log(inv_logit(final_MC_lfn_chase)) - log(inv_logit(final_MC_lfn_pulse)))/tchase)
+  MC_log_kdeg <- log(MC_kdeg)
+
+  kdeg <- mean(MC_kdeg)
+  log_kdeg <- mean(MC_log_kdeg)
+
+  kdeg_sd <- sd(MC_kdeg)
+  log_kdeg_sd <- sd(MC_log_kdeg)
+
+  return(log_kdeg_sd)
+}
+
+### Let's try varying the standard deviations
+sds <- seq(from = 0.05, to = 2, length.out = 30)
+
+log_kdeg_sd <- rep(0, times = length(sds))
+for(i in 1:length(sds)){
+  log_kdeg_sd[i] <- MC_sim(pulse_sd = sds[i], chase_sd = sds[i], samps =  10000)
+}
+
+plot(sds, log_kdeg_sd)
+abline(0,1)
+
+### Let's try varying the chase mean
+means <- seq(from = -10, to = -1, length.out = 30)
+
+log_kdeg_sd <- rep(0, times = length(means))
+for(i in 1:length(sds)){
+  log_kdeg_sd[i] <- MC_sim(pulse_mean = -0.5, chase_mean = means[i], samps =  10000)
+}
+
+plot(means, log_kdeg_sd)
+
+### What if I vary the L2FC(kdeg)? So fix pulse-chase fn and vary chase accordingly?
+
+# Reference kdeg
+kdeg_E1 <- 0.25
+
+# chase time
+tchase <- 2
+
+# pulse time
+tpulse <- 4
+
+# L2FC(kdeg)
+L2FC_kdeg <- seq(from = -2, to = 2, length.out = 30)
+
+# Experimental kdeg
+kdeg_E2 <- 2^(L2FC_kdeg + log2(kdeg_E1))
+
+# Reference fn after pulse
+fn_p_E1 <- 1 - exp(-kdeg_E1*tpulse)
+
+# Experimental fn after pulse
+fn_p_E2 <- 1 - exp(-kdeg_E2*tpulse)
+
+
+# Reference fn after chase
+fn_c_E1 <- fn_p_E1*exp(-kdeg_E1*tchase)
+
+# Experimental fn after chase
+fn_c_E2 <- fn_p_E2*exp(-kdeg_E2*tchase)
+
+
+log_kdeg_sd_E1 <- MC_sim(pulse_mean = logit(fn_p_E1),
+                         chase_mean = logit(fn_c_E1))
+
+log_kdeg_sd_E2 <- rep(0, times = length(L2FC_kdeg))
+
+
+for(i in 1:length(L2FC_kdeg)){
+
+  log_kdeg_sd_E2[i] <- MC_sim(pulse_mean = logit(fn_p_E2[i]),
+                           chase_mean = logit(fn_c_E2[i]),
+                           samps =  1000)
+}
+
+
+plot(L2FC_kdeg, log_kdeg_sd_E2)
+
+
+##### WHAT IF WE ONLY CONSIDER KDEGS ON NATURAL SCALES? ------------------------
+
+MC_sim <- function(pulse_mean = 0, pulse_sd = 0.2,
+                   chase_mean = -1, chase_sd = 0.2,
+                   tchase = 2, samps = 1000){
+
+  MC_lfn_pulse <- rnorm(samps, mean = pulse_mean,
+                        sd = pulse_sd)
+
+  MC_lfn_chase <- pmin(rnorm(samps, mean = chase_mean,
+                             sd = chase_sd),
+                       MC_lfn_pulse)
+
+  # Make sure lfn_pulse > lfn_chase
+  keeps <- which(MC_lfn_chase < MC_lfn_pulse)
+
+  final_MC_lfn_pulse <- MC_lfn_pulse[keeps]
+  final_MC_lfn_chase <- MC_lfn_chase[keeps]
+
+
+  # Make sure there are enough valid samples
+  redos <- 0
+
+  while(length(keeps) < 1000 & redos < 10){
+
+    MC_lfn_pulse <- rnorm(samps, mean = pulse_mean,
+                          sd = pulse_sd)
+
+    MC_lfn_chase <- pmin(rnorm(samps, mean = chase_mean,
+                               sd = chase_sd),
+                         MC_lfn_pulse)
+
+    new_keeps <- which(MC_lfn_chase < MC_lfn_pulse)
+    final_MC_lfn_pulse <- c(final_MC_lfn_pulse, MC_lfn_pulse[new_keeps])
+    final_MC_lfn_chase <- c(final_MC_lfn_chase, MC_lfn_chase[new_keeps])
+
+    keeps <- c(keeps, new_keeps)
+
+    redos <- redos + 1
+
+  }
+
+
+
+
+
+
+  MC_kdeg <- -((log(inv_logit(final_MC_lfn_chase)) - log(inv_logit(final_MC_lfn_pulse)))/tchase)
+  MC_log_kdeg <- log(MC_kdeg)
+
+  kdeg <- mean(MC_kdeg)
+  log_kdeg <- mean(MC_log_kdeg)
+
+  kdeg_sd <- sd(MC_kdeg)
+  log_kdeg_sd <- sd(MC_log_kdeg)
+
+  return(kdeg_sd)
+}
+
+### Let's try varying the standard deviations
+sds <- seq(from = 0.05, to = 2, length.out = 30)
+
+log_kdeg_sd <- rep(0, times = length(sds))
+for(i in 1:length(sds)){
+  log_kdeg_sd[i] <- MC_sim(pulse_sd = sds[i], chase_sd = sds[i], samps =  10000)
+}
+
+plot(sds, log_kdeg_sd)
+abline(0,1)
+
+### Let's try varying the chase mean
+means <- seq(from = -3, to = -1, length.out = 30)
+
+log_kdeg_sd <- rep(0, times = length(means))
+for(i in 1:length(sds)){
+  log_kdeg_sd[i] <- MC_sim(pulse_mean = -0.5, chase_mean = means[i], samps =  10000)
+}
+
+plot(means, log_kdeg_sd)
+
+### What if I vary the L2FC(kdeg)? So fix pulse-chase fn and vary chase accordingly?
+
+# Reference kdeg
+kdeg_E1 <- 0.25
+
+# chase time
+tchase <- 2
+
+# pulse time
+tpulse <- 4
+
+# L2FC(kdeg)
+L2FC_kdeg <- seq(from = -2, to = 2, length.out = 30)
+
+# Experimental kdeg
+kdeg_E2 <- 2^(L2FC_kdeg + log2(kdeg_E1))
+
+# Reference fn after pulse
+fn_p_E1 <- 1 - exp(-kdeg_E1*tpulse)
+
+# Experimental fn after pulse
+fn_p_E2 <- 1 - exp(-kdeg_E2*tpulse)
+
+
+# Reference fn after chase
+fn_c_E1 <- fn_p_E1*exp(-kdeg_E1*tchase)
+
+# Experimental fn after chase
+fn_c_E2 <- fn_p_E2*exp(-kdeg_E2*tchase)
+
+
+log_kdeg_sd_E1 <- MC_sim(pulse_mean = logit(fn_p_E1),
+                         chase_mean = logit(fn_c_E1))
+
+log_kdeg_sd_E2 <- rep(0, times = length(L2FC_kdeg))
+
+
+for(i in 1:length(L2FC_kdeg)){
+
+  log_kdeg_sd_E2[i] <- MC_sim(pulse_mean = logit(fn_p_E2[i]),
+                              chase_mean = logit(fn_c_E2[i]),
+                              samps =  1000)
+}
+
+
+plot(L2FC_kdeg, log_kdeg_sd_E2)
+
+
+
+##### EXPLORE CORRELATIONS -----------------------------------------------------
+
+MC_corr <- function(pulse_mean = 0, pulse_sd = 0.2,
+                   chase_mean = -0.3, chase_sd = 0.2,
+                   tchase = 2, samps = 1000){
+
+  MC_lfn_pulse <- rnorm(samps, mean = pulse_mean,
+                        sd = pulse_sd)
+
+  MC_lfn_chase <- pmin(rnorm(samps, mean = chase_mean,
+                             sd = chase_sd),
+                       MC_lfn_pulse)
+
+  # Make sure lfn_pulse > lfn_chase
+  keeps <- which(MC_lfn_chase < MC_lfn_pulse)
+
+  final_MC_lfn_pulse <- MC_lfn_pulse[keeps]
+  final_MC_lfn_chase <- MC_lfn_chase[keeps]
+
+
+  # Make sure there are enough valid samples
+  redos <- 0
+
+  while(length(keeps) < 1000 & redos < 10){
+
+    MC_lfn_pulse <- rnorm(samps, mean = pulse_mean,
+                          sd = pulse_sd)
+
+    MC_lfn_chase <- pmin(rnorm(samps, mean = chase_mean,
+                               sd = chase_sd),
+                         MC_lfn_pulse)
+
+    new_keeps <- which(MC_lfn_chase < MC_lfn_pulse)
+    final_MC_lfn_pulse <- c(final_MC_lfn_pulse, MC_lfn_pulse[new_keeps])
+    final_MC_lfn_chase <- c(final_MC_lfn_chase, MC_lfn_chase[new_keeps])
+
+    keeps <- c(keeps, new_keeps)
+
+    redos <- redos + 1
+
+  }
+
+  MC_df <- tibble(lfn_pulse = final_MC_lfn_pulse,
+                  lfn_chase = final_MC_lfn_chase)
+
+}
+
+MC_data <- MC_corr()
+
+
+plot(MC_data$lfn_pulse, MC_data$lfn_chase)
+abline(0,1)
+
+
+
+
+# # Run Hybrid analysis
+# results <- analyze_pulse_chase(fit_pulse = fit_pulse,
+#                                fit_chase_1 = fit_chase_1,
+#                                fit_chase_2 = fit_chase_2,
+#                                Hybrid = TRUE)
+#
+#
+# # Make Hybrid volcano plot
+# plotVolcano(results$Fit$Fast_Fit)
+#
+#
+#
+# ### Simulate independent data to make sure it works on actual bakRFits
+# sim_pulse <- Simulate_bakRData(500, nreps = 2,
+#                                num_kd_DE = c(0, 0),
+#                                fn_mean = 1, fn_sd = 0.05)
+#
+# sim_chase_1 <- Simulate_bakRData(500, nreps = 2,
+#                                num_kd_DE = c(0, 500),
+#                                eff_mean = -0.75,
+#                                eff_sd = 0.05,
+#                                fn_mean = 0, fn_sd = 0.05)
+#
+# sim_chase_2 <- Simulate_bakRData(500, nreps = 2,
+#                                  num_kd_DE = c(0, 500),
+#                                  eff_mean = -0.75,
+#                                  eff_sd = 0.05,
+#                                  fn_mean = 0, fn_sd = 0.05)
+#
+#
+# fit_pulse <- bakRFit(sim_pulse$bakRData, NSS = TRUE)
+# fit_chase_1 <- bakRFit(sim_chase_1$bakRData, NSS = TRUE)
+# fit_chase_2 <- bakRFit(sim_chase_2$bakRData, NSS = TRUE)
+#
+#
+# # analyze
+# results <- analyze_pulse_chase(fit_pulse = fit_pulse,
+#                                fit_chase_1 = fit_chase_1,
+#                                fit_chase_2 = fit_chase_2,
+#                                chase_dict = data.frame(Exp_ID = 1:2, tchase = c(2, 4)),
+#                                ztest = TRUE)
+#
+# plotVolcano(results$Fit$Fast_Fit)
+#
+# ### Hybrid
+#
+# # Get sampling warnings usually because data is weird, but that's to be expected.
+# fit_pulse <- bakRFit(fit_pulse, HybridFit = TRUE, NSS = TRUE)
+# fit_chase_1 <- bakRFit(fit_chase_1, HybridFit = TRUE, NSS = TRUE)
+# fit_chase_2 <- bakRFit(fit_chase_2, HybridFit = TRUE, NSS = TRUE)
+#
+# # analyze
+# results <- analyze_pulse_chase(fit_pulse = fit_pulse,
+#                                fit_chase_1 = fit_chase_1,
+#                                fit_chase_2 = fit_chase_2,
+#                                chase_dict = data.frame(Exp_ID = 1:2, tchase = c(2, 4)),
+#                                Hybrid = TRUE)
+#

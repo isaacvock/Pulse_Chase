@@ -59,7 +59,7 @@ inv_logit <- function(x) exp(x)/(1+exp(x))
 analyze_pulse_chase <- function(fit_pulse, fit_chase_1, fit_chase_2,
                                 chase_dict = tibble(Exp_ID = 1:4,
                                                     tchase = c(1, 2, 4, 8)),
-                                Hybrid = FALSE, ztest = TRUE){
+                                Hybrid = FALSE, ztest = FALSE){
 
 
   nreps <- max(fit_pulse$Fast_Fit$Fn_Estimates$Replicate)
@@ -84,8 +84,8 @@ analyze_pulse_chase <- function(fit_pulse, fit_chase_1, fit_chase_2,
 
 
         essential_chase <- tibble(Exp_ID = rep(1:NC, times = NF),
-                            lfn_sd_chase = lfns_summ$sd,
-                            lfn_chase = lfns_summ$mean,
+                            lfn_sd_chase = lfns_chase$sd,
+                            lfn_chase = lfns_chase$mean,
                             XF = fit_chase1$Fast_Fit$Regularized_ests$XF)
 
       }else{
@@ -99,8 +99,8 @@ analyze_pulse_chase <- function(fit_pulse, fit_chase_1, fit_chase_2,
 
 
         essential_chase <- tibble(Exp_ID = rep(1:NC, times = NF),
-                                  lfn_sd_chase = lfns_summ$sd,
-                                  lfn_chase = lfns_summ$mean,
+                                  lfn_sd_chase = lfns_chase$sd,
+                                  lfn_chase = lfns_chase$mean,
                                   XF = fit_chase2$Fast_Fit$Regularized_ests$XF)
       }
 
@@ -114,8 +114,8 @@ analyze_pulse_chase <- function(fit_pulse, fit_chase_1, fit_chase_2,
 
 
       essential_pulse <- tibble(Exp_ID = rep(1:NC, times = NF),
-                                lfn_sd_pulse = lfns_summ$sd,
-                                lfn_pulse = lfns_summ$mean,
+                                lfn_sd_pulse = lfns_pulse$sd,
+                                lfn_pulse = lfns_pulse$mean,
                                 XF = fit_pulse$Fast_Fit$Regularized_ests$XF)
 
       essential_pulse <- essential_pulse[essential_pulse$Exp_ID == i,c("lfn_sd_pulse", "lfn_pulse", "XF")]
@@ -200,34 +200,34 @@ analyze_pulse_chase <- function(fit_pulse, fit_chase_1, fit_chase_2,
            se = sqrt(log_kdeg_sd_1^2 + log_kdeg_sd_2^2)) %>%
     dplyr::select(XF, Exp_ID, L2FC_kdeg, effect, se)
 
-  # Make sure that standard errors aren't unreasonably variable
-  if(Hybrid){
-    pulse_sd <- sd(fit_pulse$Hybrid_Fit$Effects_df$se)
-    pulse_mean <- mean(fit_pulse$Hybrid_Fit$Effects_df$se)
-
-  }else{
-    pulse_sd <- sd(fit_pulse$Fast_Fit$Effects_df$se)
-    pulse_mean <- mean(fit_pulse$Fast_Fit$Effects_df$se)
-
-  }
-  chase_sd <- sd(effects$se)
-  chase_mean <- mean(effects$se)
-
-  if(chase_sd > pulse_sd){
-
-    if(chase_mean < pulse_mean){
-      effects$se <- ((effects$se - chase_mean)/chase_sd)*pulse_sd + pulse_mean
-
-    }else{
-      effects$se <- ((effects$se - chase_mean)/chase_sd)*pulse_sd + chase_mean
-
-    }
-
-  }
-
-  if(chase_mean < pulse_mean){
-    effects$se <- effects$se + (pulse_mean - chase_mean)
-  }
+  # # Make sure that standard errors aren't unreasonably variable
+  # if(Hybrid){
+  #   pulse_sd <- sd(fit_pulse$Hybrid_Fit$Effects_df$se)
+  #   pulse_mean <- mean(fit_pulse$Hybrid_Fit$Effects_df$se)
+  #
+  # }else{
+  #   pulse_sd <- sd(fit_pulse$Fast_Fit$Effects_df$se)
+  #   pulse_mean <- mean(fit_pulse$Fast_Fit$Effects_df$se)
+  #
+  # }
+  # chase_sd <- sd(effects$se)
+  # chase_mean <- mean(effects$se)
+  #
+  # if(chase_sd > pulse_sd){
+  #
+  #   if(chase_mean < pulse_mean){
+  #     effects$se <- ((effects$se - chase_mean)/chase_sd)*pulse_sd + pulse_mean
+  #
+  #   }else{
+  #     effects$se <- ((effects$se - chase_mean)/chase_sd)*pulse_sd + chase_mean
+  #
+  #   }
+  #
+  # }
+  #
+  # if(chase_mean < pulse_mean){
+  #   effects$se <- effects$se + (pulse_mean - chase_mean)
+  # }
 
 
   # add chase time to effect sizes
@@ -266,7 +266,7 @@ analyze_pulse_chase <- function(fit_pulse, fit_chase_1, fit_chase_2,
 # "pulse" (condition 2 much larger fraction news than condition 1)
 sim_pulse <- Simulate_bakRData(500, nreps = 2,
                                eff_mean = 1, eff_sd = 0.25,
-                               num_kd_DE = c(0, 500))
+                               num_kd_DE = c(0, 0))
 
 fit_pulse <- bakRFit(sim_pulse$bakRData, NSS = TRUE)
 

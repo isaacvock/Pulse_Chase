@@ -171,10 +171,11 @@ analyze_pulse_chase <- function(fit_pulse, fit_chase_1, fit_chase_2,
     # Add chase time information
     merged_fits <- dplyr::inner_join(merged_fits, chase_dict, by = "Exp_ID")
 
+
     # Estimate kdeg and kdeg sd
     merged_fits <- merged_fits %>%
       dplyr::mutate(kdeg = (log_fn_pulse - log_fn_chase)/tchase,
-             kdeg_sd = sqrt( (log_fn_chase_sd)^2 + (log_fn_pulse_sd)^2 ))
+             kdeg_sd = sqrt( (log_fn_chase_sd)^2 + (log_fn_pulse_sd)^2 )/tchase)
 
     # Filter out negative kdeg estimates (from when chase fn > pulse fn due to random variance)
     merged_fits <- merged_fits[merged_fits$kdeg > 0,]
@@ -355,12 +356,12 @@ fit_chase_2 <- list(Fast_Fit = list(Regularized_ests = regest_chase))
 results <- analyze_pulse_chase(fit_pulse = fit_pulse,
                                fit_chase_1 = fit_chase_1,
                                fit_chase_2 = fit_chase_2,
-                               ztest = TRUE,
-                               conservative = FALSE, null_cutoff = 0.5)
+                               ztest = FALSE,
+                               conservative = TRUE)
 
 
 # Make volcano plot
-plotVolcano(results$Fit$Fast_Fit)
+plotVolcano(results$Fit$Fast_Fit, Exps = 2)
 
 
 # Run Hybrid analysis

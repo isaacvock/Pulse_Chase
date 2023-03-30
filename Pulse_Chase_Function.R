@@ -59,7 +59,7 @@ inv_logit <- function(x) exp(x)/(1+exp(x))
 analyze_pulse_chase <- function(fit_pulse, fit_chase_1, fit_chase_2,
                                 chase_dict = tibble(Exp_ID = 1:4,
                                                     tchase = c(1, 2, 4, 8)),
-                                Hybrid = FALSE, ztest = FALSE){
+                                Hybrid = FALSE, ztest = FALSE, conservative = FALSE){
 
 
   nreps <- max(fit_pulse$Fast_Fit$Fn_Estimates$Replicate)
@@ -200,34 +200,37 @@ analyze_pulse_chase <- function(fit_pulse, fit_chase_1, fit_chase_2,
            se = sqrt(log_kdeg_sd_1^2 + log_kdeg_sd_2^2)) %>%
     dplyr::select(XF, Exp_ID, L2FC_kdeg, effect, se)
 
-  # # Make sure that standard errors aren't unreasonably variable
-  # if(Hybrid){
-  #   pulse_sd <- sd(fit_pulse$Hybrid_Fit$Effects_df$se)
-  #   pulse_mean <- mean(fit_pulse$Hybrid_Fit$Effects_df$se)
-  #
-  # }else{
-  #   pulse_sd <- sd(fit_pulse$Fast_Fit$Effects_df$se)
-  #   pulse_mean <- mean(fit_pulse$Fast_Fit$Effects_df$se)
-  #
-  # }
-  # chase_sd <- sd(effects$se)
-  # chase_mean <- mean(effects$se)
-  #
-  # if(chase_sd > pulse_sd){
-  #
-  #   if(chase_mean < pulse_mean){
-  #     effects$se <- ((effects$se - chase_mean)/chase_sd)*pulse_sd + pulse_mean
-  #
-  #   }else{
-  #     effects$se <- ((effects$se - chase_mean)/chase_sd)*pulse_sd + chase_mean
-  #
-  #   }
-  #
-  # }
-  #
-  # if(chase_mean < pulse_mean){
-  #   effects$se <- effects$se + (pulse_mean - chase_mean)
-  # }
+  if(conservative){
+    # Make sure that standard errors aren't unreasonably variable
+    if(Hybrid){
+      pulse_sd <- sd(fit_pulse$Hybrid_Fit$Effects_df$se)
+      pulse_mean <- mean(fit_pulse$Hybrid_Fit$Effects_df$se)
+
+    }else{
+      pulse_sd <- sd(fit_pulse$Fast_Fit$Effects_df$se)
+      pulse_mean <- mean(fit_pulse$Fast_Fit$Effects_df$se)
+
+    }
+    chase_sd <- sd(effects$se)
+    chase_mean <- mean(effects$se)
+
+    if(chase_sd > pulse_sd){
+
+      if(chase_mean < pulse_mean){
+        effects$se <- ((effects$se - chase_mean)/chase_sd)*pulse_sd + pulse_mean
+
+      }else{
+        effects$se <- ((effects$se - chase_mean)/chase_sd)*pulse_sd + chase_mean
+
+      }
+
+    }
+
+    if(chase_mean < pulse_mean){
+      effects$se <- effects$se + (pulse_mean - chase_mean)
+    }
+  }
+
 
 
   # add chase time to effect sizes

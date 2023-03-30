@@ -59,7 +59,8 @@ inv_logit <- function(x) exp(x)/(1+exp(x))
 analyze_pulse_chase <- function(fit_pulse, fit_chase_1, fit_chase_2,
                                 chase_dict = tibble(Exp_ID = 1:4,
                                                     tchase = c(1, 2, 4, 8)),
-                                Hybrid = FALSE, ztest = FALSE, conservative = FALSE){
+                                Hybrid = FALSE, ztest = FALSE, conservative = TRUE,
+                                reg_factor = 2, null_cutoff = 0){
 
 
   nreps <- max(fit_pulse$Fast_Fit$Fn_Estimates$Replicate)
@@ -201,46 +202,23 @@ analyze_pulse_chase <- function(fit_pulse, fit_chase_1, fit_chase_2,
     dplyr::select(XF, Exp_ID, L2FC_kdeg, effect, se)
 
   if(conservative){
-    # Make sure that standard errors aren't unreasonably variable
-    if(Hybrid){
-      pulse_sd <- sd(fit_pulse$Hybrid_Fit$Effects_df$se)
-      pulse_mean <- mean(fit_pulse$Hybrid_Fit$Effects_df$se)
 
-    }else{
-      pulse_sd <- sd(fit_pulse$Fast_Fit$Effects_df$se)
-      pulse_mean <- mean(fit_pulse$Fast_Fit$Effects_df$se)
-
-    }
     chase_sd <- sd(effects$se)
     chase_mean <- mean(effects$se)
 
-    if(chase_sd > pulse_sd){
-
-      if(chase_mean < pulse_mean){
-        effects$se <- ((effects$se - chase_mean)/chase_sd)*pulse_sd + pulse_mean
-
-      }else{
-        effects$se <- ((effects$se - chase_mean)/chase_sd)*pulse_sd + chase_mean
-
-      }
-
-    }
-
-    if(chase_mean < pulse_mean){
-      effects$se <- effects$se + (pulse_mean - chase_mean)
-    }
+    # regularize chase ses
+    effects$se <- (effects$se/reg_factor) + (chase_mean/reg_factor)
   }
-
 
 
   # add chase time to effect sizes
   if(ztest){
     effects <- inner_join(effects, chase_dict, by = "Exp_ID") %>%
-      dplyr::mutate(pval = 2*pnorm(-abs(effect/se), lower.tail = TRUE),
+      dplyr::mutate(pval = pmin(1, 2*pnorm((abs(effect) - null_cutoff)/se, lower.tail = FALSE)),
              padj = p.adjust(pval, method = "BH"))
   }else{
     effects <- inner_join(effects, chase_dict, by = "Exp_ID") %>%
-      dplyr::mutate(pval = 2*pt(-abs(effect/se), df = 2*(nreps - 1) + 2*fit_pulse$Fast_Fit$Hyper_Parameters[1], lower.tail = TRUE),
+      dplyr::mutate(pval = pmin(1, 2*pt((abs(effect) - null_cutoff)/se, df = 2*(nreps - 1) + 2*fit_pulse$Fast_Fit$Hyper_Parameters[1], lower.tail = FALSE)),
              padj = p.adjust(pval, method = "BH"))
   }
 
@@ -269,7 +247,7 @@ analyze_pulse_chase <- function(fit_pulse, fit_chase_1, fit_chase_2,
 # "pulse" (condition 2 much larger fraction news than condition 1)
 sim_pulse <- Simulate_bakRData(500, nreps = 2,
                                eff_mean = 1, eff_sd = 0.25,
-                               num_kd_DE = c(0, 0))
+                               num_kd_DE = c(0, 500))
 
 fit_pulse <- bakRFit(sim_pulse$bakRData, NSS = TRUE)
 
@@ -366,7 +344,8 @@ fit_chase_2 <- list(Fast_Fit = list(Regularized_ests = regest_chase))
 results <- analyze_pulse_chase(fit_pulse = fit_pulse,
                                fit_chase_1 = fit_chase_1,
                                fit_chase_2 = fit_chase_2,
-                               ztest = TRUE)
+                               ztest = TRUE,
+                               conservative = FALSE, null_cutoff = 0.5)
 
 
 # Make volcano plot

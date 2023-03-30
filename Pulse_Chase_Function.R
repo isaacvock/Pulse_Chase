@@ -42,6 +42,17 @@ inv_logit <- function(x) exp(x)/(1+exp(x))
 #' It is made default because other aspects of analysis are fairly conservative,
 #' so it balances out.
 #'
+#' conservative: Boolean indicating whether to reduce the standard deviation of
+#' the L2FC(kdeg) standard errors. Setting this to FALSE can cause some very small
+#' effect sizes to be called signficant.
+#'
+#' reg_factor: If conservative is TRUE, then this determines the extent to which the
+#' L2FC(kdeg) standard error distribution has its standard deviation reduced.
+#'
+#' null_cutoff: |L2FC(kdeg)| cutoff for null hypothesis testing. The null hypothesis
+#' tested will be |L2FC(kdeg)| < |null_cutoff|. Setting null_cutoff to 0 is the standard
+#' t/z-test.
+#'
 #' OUTPUT:
 #' A list with 4 objects in it:
 #' 1) Fit: A fake bakRFit object that will allow you to make Volcano plots with

@@ -274,9 +274,9 @@ analyze_pulse_chase <- function(fit_pulse, fit_chase_1, fit_chase_2,
     }else{
       merged_fits <- merged_fits %>%
         dplyr::mutate(log_fn_chase = log(inv_logit(lfn_chase)),
-                      log_fn_chase_sd = ((1 - inv_logit(lfn_chase))^2)*(lfn_sd_chase^2),
+                      log_fn_chase_sd = sqrt(((1 - inv_logit(lfn_chase))^2)*(lfn_sd_chase^2)),
                       log_fn_pulse = log(inv_logit(lfn_pulse)),
-                      log_fn_pulse_sd = ((1 - inv_logit(lfn_pulse))^2)*(lfn_sd_pulse^2))
+                      log_fn_pulse_sd = sqrt(((1 - inv_logit(lfn_pulse))^2)*(lfn_sd_pulse^2)))
 
       # Add chase time information
       merged_fits <- dplyr::inner_join(merged_fits, chase_dict, by = "Exp_ID")
@@ -487,7 +487,7 @@ results <- analyze_pulse_chase(fit_pulse = fit_pulse,
                                   fit_chase_1 = fit_chase_1,
                                   fit_chase_2 = fit_chase_2,
                                   ztest = FALSE,
-                                  conservative = TRUE,
+                                  conservative = FALSE,
                                   MC = FALSE)
 
 
@@ -546,6 +546,35 @@ abline(0,1)
 
 plot(results$Chase_kdegs_E1$log_kdeg_sd, results_MC$Chase_kdegs_E1$log_kdeg_sd)
 abline(0,1)
+
+plot(results$Chase_kdegs_E1$kdeg_sd,
+     results_MC$Chase_kdegs_E1$kdeg_sd,
+     ylim = c(0, 0.25), xlim = c(0, 0.09))
+abline(0,1)
+
+plot(results$Chase_kdegs_E1$kdeg_sd[results$Chase_kdegs_E1$Exp_ID == 1],
+     results_MC$Chase_kdegs_E1$kdeg_sd[results_MC$Chase_kdegs_E1$Exp_ID == 1],
+     ylim = c(0, 0.25), xlim = c(0, 0.09))
+abline(0,1)
+
+
+plot(results$Chase_kdegs_E1$kdeg_sd[results$Chase_kdegs_E1$Exp_ID == 2],
+     results_MC$Chase_kdegs_E1$kdeg_sd[results_MC$Chase_kdegs_E1$Exp_ID == 2],
+     ylim = c(0, 0.25), xlim = c(0, 0.09))
+abline(0,1)
+
+
+plot(results$Chase_kdegs_E1$kdeg_sd[results$Chase_kdegs_E1$Exp_ID == 3],
+     results_MC$Chase_kdegs_E1$kdeg_sd[results_MC$Chase_kdegs_E1$Exp_ID == 3],
+     ylim = c(0, 0.25), xlim = c(0, 0.09))
+abline(0,1)
+
+
+plot(results$Chase_kdegs_E1$kdeg_sd[results$Chase_kdegs_E1$Exp_ID == 4],
+     results_MC$Chase_kdegs_E1$kdeg_sd[results_MC$Chase_kdegs_E1$Exp_ID == 4],
+     ylim = c(0, 0.25), xlim = c(0, 0.09))
+abline(0,1)
+
 
 # How well does pulse estimate uncertainty correlate with L2FC(kdeg) uncertainty
 pulse_reg <- fit_pulse$Fast_Fit$Regularized_ests
@@ -922,6 +951,76 @@ MC_data <- MC_corr()
 plot(MC_data$lfn_pulse, MC_data$lfn_chase)
 abline(0,1)
 
+
+
+##### COMPARE DELTA APPROXIMATION TO MC FOR LOG(FN) UNCERTAINTY QUANT ----------
+MC_fn <- function(pulse_mean = 0, pulse_sd = 0.2,
+                   chase_mean = -1, chase_sd = 0.2,
+                   tchase = 2, samps = 1000){
+
+  MC_lfn_pulse <- rnorm(samps, mean = pulse_mean,
+                        sd = pulse_sd)
+
+  MC_lfn_chase <- pmin(rnorm(samps, mean = chase_mean,
+                             sd = chase_sd),
+                       MC_lfn_pulse)
+
+  # Make sure lfn_pulse > lfn_chase
+  keeps <- which(MC_lfn_chase < MC_lfn_pulse)
+
+  final_MC_lfn_pulse <- MC_lfn_pulse[keeps]
+  final_MC_lfn_chase <- MC_lfn_chase[keeps]
+
+
+  # Make sure there are enough valid samples
+  redos <- 0
+
+  while(length(keeps) < 1000 & redos < 10){
+
+    MC_lfn_pulse <- rnorm(samps, mean = pulse_mean,
+                          sd = pulse_sd)
+
+    MC_lfn_chase <- pmin(rnorm(samps, mean = chase_mean,
+                               sd = chase_sd),
+                         MC_lfn_pulse)
+
+    new_keeps <- which(MC_lfn_chase < MC_lfn_pulse)
+    final_MC_lfn_pulse <- c(final_MC_lfn_pulse, MC_lfn_pulse[new_keeps])
+    final_MC_lfn_chase <- c(final_MC_lfn_chase, MC_lfn_chase[new_keeps])
+
+    keeps <- c(keeps, new_keeps)
+
+    redos <- redos + 1
+
+  }
+
+  MC_log_fn_chase <- log(final_MC_lfn_chase)
+  MC_log_fn_pulse <- log(final_MC_lfn_pulse)
+
+  log_fn_sd_chase <- sd(MC_log_fn_chase)
+  log_fn_sd_pulse <- sd(MC_log_fn_pulse)
+
+  log_fn_chase <- mean(MC_log_fn_chase)
+  log_fn_pulse <- mean(MC_log_fn_pulse)
+
+  results <- c(log_fn_sd_c = log_fn_sd_chase,
+               log_fn_sd_p = log_fn_sd_pulse,
+               log_fn_c = log_fn_chase,
+               log_fn_p = log_fn_pulse)
+
+  return(results)
+}
+
+delta_approx <- function(pulse_mean = 0, pulse_sd = 0.2,
+                         chase_mean = -1, chase_sd = 0.2){
+
+  log_fn_chase = log(inv_logit(chase_mean))
+  log_fn_chase_sd = ((1 - inv_logit(chase_mean))^2)*(chase_sd^2)
+  log_fn_pulse = log(inv_logit(lfn_pulse))
+  log_fn_pulse_sd = ((1 - inv_logit(lfn_pulse))^2)*(^2)
+
+
+}
 
 
 

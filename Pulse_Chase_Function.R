@@ -175,7 +175,7 @@ analyze_pulse_chase <- function(fit_pulse, fit_chase_1, fit_chase_2,
         essential_chase <- tibble(Exp_ID = rep(1:NC, times = NF),
                             lfn_sd_chase = lfns_chase$sd,
                             lfn_chase = lfns_chase$mean,
-                            XF = fit_chase1$Fast_Fit$Regularized_ests$XF)
+                            XF = fit_chase_1$Fast_Fit$Regularized_ests$XF)
 
       }else{
         reg_chase <- fit_chase_2$Hybrid_Fit$Fit_Summary
@@ -190,7 +190,7 @@ analyze_pulse_chase <- function(fit_pulse, fit_chase_1, fit_chase_2,
         essential_chase <- tibble(Exp_ID = rep(1:NC, times = NF),
                                   lfn_sd_chase = lfns_chase$sd,
                                   lfn_chase = lfns_chase$mean,
-                                  XF = fit_chase2$Fast_Fit$Regularized_ests$XF)
+                                  XF = fit_chase_2$Fast_Fit$Regularized_ests$XF)
       }
 
       reg_pulse <- fit_pulse$Hybrid_Fit$Fit_Summary
